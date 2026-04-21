@@ -259,4 +259,4 @@ with gr.Blocks() as demo:
     gr.Markdown("# 🔮 Tarot Master 系統正常運行中")
     gr.Markdown("請直接前往 Telegram 與機器人對話。")
 
-demo.launch()
+demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 10000)))
