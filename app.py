@@ -46,7 +46,7 @@ async def get_gemini_response(prompt):
     except Exception as api_err:
         if "503" in str(api_err) or "429" in str(api_err):
             print("3.1 通道塞車，自動切換至 2.0 備用通道...")
-            return client.models.generate_content(model='gemini-2.0-flash', contents=prompt).text
+            return client.models.generate_content(model='gemini-2.5-flash', contents=prompt).text
         raise api_err
 
 async def safe_reply_with_html(message_obj, text, reply_markup=None):
