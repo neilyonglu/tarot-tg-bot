@@ -7,7 +7,7 @@ import json
 from io import BytesIO
 from PIL import Image
 from datetime import date
-import gradio as gr
+from http.server import BaseHTTPRequestHandler, HTTPServer  # 🌟 新增：極輕量伺服器套件
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from google import genai
@@ -125,7 +125,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ 靈力中斷：{str(e)}")
         return 
         
-    # 🌟 修改點 1：這裡「只檢查與顯示」，不扣除次數！
     is_unlocked = context.user_data.get('is_unlocked', False)
     limit_hint = ""
     
@@ -139,7 +138,6 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⏳ 每日免費 5 次已用完。\n💡 若是 VIP 請輸入「/pwd 你的密碼」解鎖無限模式！")
             return
             
-        # 不扣次數，單純計算並提示還剩幾次
         remaining = DAILY_LIMIT - context.user_data.get('usage_count', 0)
         limit_hint = f"\n(💡 今日抽牌額度剩餘：{remaining} 次)"
 
@@ -161,13 +159,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("🌙 記憶已重置。\n請直接輸入你【新的問題】，我將為你開啟全新的占卜。")
         return
     
-    # 判斷使用者點擊了哪個牌陣
     if query.data == "draw_1": count, layout_name, positions = 1, "單張", ["核心指引"]
     elif query.data == "draw_4": count, layout_name, positions = 4, "四牌陣", ["現在心態", "過去事件", "現在事件", "未來事件"]
     elif query.data == "draw_hexa": count, layout_name, positions = 7, "六芒星", ["過去狀況", "現在狀況", "未來發展", "對應策略", "周遭狀況", "問者態度", "最後結果"]
     else: return
 
-    # 🌟 修改點 2：在正式開始抽牌前，真正扣除次數！
     is_unlocked = context.user_data.get('is_unlocked', False)
     if not is_unlocked:
         today = date.today().isoformat()
@@ -179,7 +175,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⏳ 大師今天的靈力已經耗盡囉！請輸入「/pwd 你的密碼」解鎖。")
             return
             
-        # 確認有額度後，正式扣款！
         context.user_data['usage_count'] += 1
 
     await query.edit_message_text(f"🔮 佈下【{layout_name}】中，請稍候...")
@@ -238,7 +233,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.message.reply_text(f"❌ 靈力中斷：{str(e)}")
 
-# --- 4. 背景隱身術啟動器 ---
+# --- 4. 機器人啟動器 ---
 def run_bot():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -253,10 +248,26 @@ def run_bot():
     print("--- 機器人已在背景啟動 ---")
     app.run_polling(stop_signals=None, drop_pending_updates=True)
 
-threading.Thread(target=run_bot, daemon=True).start()
+# --- 5. 🌟 極輕量網頁伺服器 (給 UptimeRobot 喚醒用) ---
+class PingHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(b"Tarot Master is awake!")
+        
+    def log_message(self, format, *args):
+        pass  # 關閉日誌，讓伺服器更安靜省力
 
-with gr.Blocks() as demo:
-    gr.Markdown("# 🔮 Tarot Master 系統正常運行中")
-    gr.Markdown("請直接前往 Telegram 與機器人對話。")
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), PingHandler)
+    print(f"--- 輕量喚醒伺服器已在 Port {port} 對外開放 ---")
+    server.serve_forever()
 
-demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 10000)))
+if __name__ == "__main__":
+    # 讓 Telegram 機器人在背景獨立運作
+    threading.Thread(target=run_bot, daemon=True).start()
+    
+    # 讓輕量伺服器在主程式運作，向外打開大門
+    run_dummy_server()
