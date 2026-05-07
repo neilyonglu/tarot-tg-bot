@@ -7,7 +7,7 @@ import json
 from io import BytesIO
 from PIL import Image
 from datetime import date
-from http.server import BaseHTTPRequestHandler, HTTPServer  # 🌟 新增：極輕量伺服器套件
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from google import genai
@@ -27,9 +27,21 @@ with open('tarot_data.json', 'r', encoding='utf-8') as file:
 # --- 2. 共用小工具 ---
 
 def get_rotated_card(url, is_reversed):
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(url, headers=headers, timeout=15)
-    response.raise_for_status()
+    headers = {
+    'User-Agent': 'TelegramTarotBot/1.0 (https://github.com/neilyonglu/tarot-tg-bot)' 
+    }
+    for _ in range(3): 
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            break # 成功就跳出迴圈
+        except requests.exceptions.RequestException as e:
+            print(f"抓圖失敗，正在重試... 錯誤: {e}")
+            import time
+            time.sleep(1) # 等 1 秒再試
+    else:
+        raise Exception("無法連線到維基百科圖庫，請稍後再試。")
+    
     img = Image.open(BytesIO(response.content))
     if is_reversed: img = img.rotate(180)
     img.thumbnail((600, 800))
