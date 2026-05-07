@@ -53,13 +53,19 @@ def get_rotated_card(url, is_reversed):
     return bio
 
 async def get_gemini_response(prompt):
-    try:
-        return client.models.generate_content(model='gemini-3.1-flash-lite-preview', contents=prompt).text
-    except Exception as api_err:
-        if "503" in str(api_err) or "429" in str(api_err):
-            print("3.1 通道塞車，自動切換至 2.0 備用通道...")
-            return client.models.generate_content(model='gemini-2.5-flash', contents=prompt).text
-        raise api_err
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(model='gemini-2.5-flash', contents=prompt).text       
+        except Exception as api_err:
+            err_str = str(api_err)
+            # 如果遇到 503(塞車) 或 429(請求太頻繁)
+            if "503" in err_str or "429" in err_str:
+                if attempt < max_retries - 1:
+                    print(f"⚠️ 靈力線路擁塞，等待 2 秒後進行第 {attempt + 2} 次重試...")
+                    await asyncio.sleep(2)
+                    continue
+            raise api_err
 
 async def safe_reply_with_html(message_obj, text, reply_markup=None):
     try:
