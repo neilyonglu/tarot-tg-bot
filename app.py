@@ -28,7 +28,7 @@ from telegram.ext import (
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY")
 SECRET_PASSWORD = os.environ.get("VIP_PASSWORD", "未設定密碼")
-DAILY_LIMIT     = 5
+DAILY_LIMIT     = 7
 CONTEXT_MAX_CHARS = 2000  # 追問記憶上限，超過則截掉最舊的部分
 
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -76,7 +76,7 @@ MANUAL_TEXT = """\
 點擊「🔄 結束追問，開啟新占卜」重置記憶，開始全新問題。
 
 <b>【使用限制】</b>
-每日免費占卜 5 次，隔天自動重置。
+每日免費占卜 7 次，隔天自動重置。
 
 <b>【VIP 模式】</b>
 輸入 <code>/pwd 你的密碼</code> 解鎖無限次數占卜。
@@ -232,7 +232,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     remaining = get_remaining_uses(context.user_data)
     if remaining is not None and remaining <= 0:
         await update.message.reply_text(
-            "⏳ 每日免費 5 次已用完。\n💡 若是 VIP 請輸入「/pwd 你的密碼」解鎖無限模式！"
+            "⏳ 每日免費 7 次已用完。\n💡 若是 VIP 請輸入「/pwd 你的密碼」解鎖無限模式！"
         )
         return
 
