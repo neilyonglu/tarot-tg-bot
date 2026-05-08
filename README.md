@@ -6,9 +6,9 @@ Telegram 塔羅占卜機器人，使用萊德偉特牌組，透過 Gemini AI 提
 
 - **三種牌陣**：單張、四牌陣（心態/過去/現在/未來）、六芒星（7張深度分析）
 - **正逆位**：隨機決定正/逆位，自動旋轉圖片
-- **AI 解析**：Gemini 2.5 Flash 根據問題與牌面給出客製化詮釋
+- **AI 解析**：Gemini 3.1 Flash lite 根據問題與牌面給出客製化詮釋
 - **後續追問**：占卜完成後可繼續追問，保留完整上下文
-- **使用限制**：每日免費 5 次；VIP 密碼解鎖無限制
+- **使用限制**：每日免費 7 次；VIP 密碼解鎖無限制
 
 ## 專案結構
 
@@ -17,7 +17,6 @@ tarot-tg-bot/
 ├── cards/               # 78 張塔羅牌圖片（公共領域）
 ├── app.py               # 主程式
 ├── download_cards.py    # 工具：從 Wikimedia 下載卡牌圖片
-├── tarot_data.json      # 卡牌名稱 → Wikimedia 圖片 URL
 └── requirements.txt
 ```
 
