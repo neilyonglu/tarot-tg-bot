@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import os
 import random
@@ -28,6 +29,7 @@ from telegram.ext import (
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY")
 SECRET_PASSWORD = os.environ.get("VIP_PASSWORD", "未設定密碼")
+GEMINI_MODEL    = "gemini-3.1-flash-lite"
 DAILY_LIMIT     = 7
 CONTEXT_MAX_CHARS = 2000  # 追問記憶上限，超過則截掉最舊的部分
 
@@ -42,22 +44,158 @@ LAYOUTS = {
     "draw_hexa": (7, "六芒星", ["過去狀況", "現在狀況", "未來發展", "對應策略", "周遭狀況", "問者態度", "最後結果"]),
 }
 
-READING_PROMPT = """\
-你是一位精通萊德偉特體系的塔羅大師。
-問題：「{question}」
-牌陣：【{layout}】
-結果：
+# ── Prompts ───────────────────────────────────────────────────────────────────
+
+# === FULL 版：給使用者複製到自己的 LLM (ChatGPT/Claude/Gemini Pro 等) ===
+# 不限制 Markdown，讓對方 LLM 自然格式化；指令更完整。
+READING_PROMPT_FULL = """\
+這是一份塔羅占卜解讀請求。請扮演專業的塔羅諮詢師，使用萊德偉特體系（Rider-Waite-Smith）的傳統象徵。
+你的任務不是預測未來，而是透過牌面協助問者看清當下處境、盲點與選擇空間。
+
+# 問者問題
+{question}
+
+# 使用牌陣
+{layout}
+
+# 抽牌結果
 {cards}
 
-請結合牌面深度解析並給予建議。
+# 解讀任務（請依序執行）
 
-【⚠️排版嚴格要求】：
-請務必使用 Telegram 支援的 HTML 標籤進行排版：
-- 粗體請使用 <b>你的文字</b>
-- 斜體請使用 <i>你的文字</i>
-- 底線請使用 <u>你的文字</u>
-絕對不要使用任何 Markdown 語法（例如 **粗體**、*斜體* 或 # 標題）。
-段落之間請直接換行即可，不需要使用 <br>。\
+## 步驟一：逐牌定位
+針對每一張牌，依序說明：
+1. 該牌在 RWS 體系的核心象徵（1–2 句即可，避免空泛）
+2. 正位／逆位的具體差異
+3. 牌面圖像中（人物、姿態、場景、符號）最能呼應此次問題與牌位的細節
+4. 此牌在這個牌位上對問者的具體訊息
+
+要求：
+- 每一點都要錨定在牌的具體象徵或圖像細節，不要使用「能量」「氛圍」「振動」這類含糊詞
+- 若牌與牌位語意有張力（例如「未來」位出現停滯型牌），請把張力本身當成訊息點出，不要硬解
+
+## 步驟二：跨牌觀察（單張牌請跳過此步）
+只在實際出現時寫，沒有就略過，不要硬湊：
+- 大阿爾克那比例（多 = 命運層面議題；少 = 日常選擇層面）
+- 花色集中（聖杯=情感／寶劍=思緒／權杖=行動／錢幣=現實）
+- 數字重複或遞進（同數字 = 主題重複；遞進 = 階段性發展）
+- 宮廷牌（指向具體人物或問者自身扮演的角色）
+- 逆位比例偏高（暗示卡點在內在尚未顯化）
+
+## 步驟三：回應問題
+綜合前兩步，直接回應問者的問題：
+- 不要重述步驟一已寫過的內容
+- 不要做具體時間預言（不要寫「下個月」「三週內」這類話）
+- 若牌面指向多種可能，誠實列出並標明各自牌面依據
+- 若牌面與問題不直接相關，誠實說出，並指出牌面真正在回應的是什麼
+
+## 步驟四：可行的反思與行動
+給 2–3 點具體建議：
+- 每點都要標明來自前面分析中的哪張牌或哪個模式
+- 是「問者可以做的事」或「值得問自己的問題」，不是「將會發生什麼」
+- 避免心靈雞湯，避免「相信宇宙」這類話
+
+# 禁止事項
+1. 不對醫療、法律、財務做具體建議；若問題涉及這些，請建議問者尋求對應專業協助
+2. 不對特定他人做人格評斷或診斷
+3. 不做高確定性的未來預言
+4. 若問者透露自我傷害、嚴重憂鬱等訊號，請優先溫和提醒尋求專業心理支持，再給牌面解讀
+
+# 語氣與排版
+誠懇、專業，像有經驗的諮詢師朋友，不要使用神祕學腔調。
+篇幅以資訊密度為準，講清楚就停，不要為了長度填字。
+請使用清楚易讀的排版（粗體、條列、標題等），便於在你目前的 LLM 介面閱讀。\
+"""
+
+# === LITE 版：給內建 Gemini Flash Lite 用 ===
+# 精簡指令；嚴格要求 Telegram HTML，禁止 Markdown。
+READING_PROMPT_LITE = """\
+你是專業的塔羅諮詢師，使用萊德偉特體系（RWS）。
+你的任務不是預測未來，而是協助問者看清當下處境與選擇空間。
+
+# 問題
+{question}
+
+# 牌陣
+{layout}
+
+# 抽牌結果
+{cards}
+
+# 解讀步驟（依序執行）
+
+## 步驟一：逐牌定位
+每張牌依序說明：
+1. RWS 核心象徵（1-2 句）
+2. 正位／逆位的具體差異
+3. 牌面圖像中（人物、姿態、場景、符號）呼應此次問題與牌位的細節
+4. 此牌在這個牌位上對問者的訊息
+
+要求：每點都要錨定具體象徵或圖像，不要用「能量」「氛圍」「振動」這類含糊詞。
+
+## 步驟二：跨牌觀察（單張牌跳過）
+只在實際出現時寫：大阿爾克那比例、花色集中、數字重複、宮廷牌、逆位比例偏高。
+
+## 步驟三：回應問題
+綜合前兩步直接回答問者，不要重述步驟一。
+不做時間預言（如「下個月」「三週內」）。
+多解時誠實列出各自牌面依據。
+
+## 步驟四：建議
+2-3 點，每點標明來自哪張牌；是「可做的事」或「值得問自己的問題」，不是預言。
+
+# 排版要求（嚴格）
+請務必使用 Telegram HTML 標籤：
+- 粗體 <b>文字</b>
+- 斜體 <i>文字</i>
+- 底線 <u>文字</u>
+
+絕對不要使用 Markdown（不要 **粗體**、*斜體*、# 標題、- 條列符號）。
+段落之間直接換行，不要 <br>。
+條列用「・」或「1. 2. 3.」開頭。
+
+# 禁止事項
+不做時間預言；不對特定他人人格評斷；不給醫療／法律／財務具體建議。
+若問者透露自殘或嚴重憂鬱訊號，先溫和提醒尋求專業協助再解讀。
+
+# 語氣
+誠懇、專業，不要神祕學腔調，不要心靈雞湯。
+講清楚就停，不要為長度填字。\
+"""
+
+# === 追問版：內建模式才會用到 ===
+FOLLOW_UP_PROMPT = """\
+你是專業的塔羅諮詢師，正在回應問者對先前牌陣解讀的追問。
+
+# 最初的問題
+{question}
+
+# 當時抽到的牌（{layout}）
+{cards}
+
+# 先前的解讀脈絡
+{reading_context}
+
+# 問者最新的追問
+{follow_up}
+
+# 任務原則
+1. 聚焦在追問本身，不要重新解讀整副牌
+2. 必須引用具體某張牌或某個牌面元素作為依據——這是和一般聊天的差別
+3. 若追問已經偏離牌面能回答的範圍（例如問了完全無關的新問題），誠實指出並建議是否需要重新抽牌
+4. 若追問是對先前解讀的反駁或補充資訊，重新評估牌面在新脈絡下的意義
+
+# 禁止
+不做時間預言；不對他人做人格評斷；不給醫療／法律／財務具體建議；
+不要使用「能量」「振動」「宇宙安排」這類含糊詞。
+
+# 排版要求（嚴格）
+僅用 Telegram HTML：<b>粗體</b>、<i>斜體</i>、<u>底線</u>。
+絕對不要 Markdown（不要 **粗體**、*斜體*、# 標題）。
+段落直接換行，不要 <br>。條列用「・」或數字。
+
+# 篇幅
+比初次解讀短，聚焦回答即可，不要硬湊長度。\
 """
 
 MANUAL_TEXT = """\
@@ -68,15 +206,20 @@ MANUAL_TEXT = """\
 
 <b>【三種牌陣】</b>
 🔮 <b>單張</b> — 快速解惑，抽 1 張核心指引牌
-🎴 <b>四牌陣</b> — 深入分析，抽 4 張（現在心態／過去／現在／未來）
-✡️ <b>六芒星</b> — 全面解析，抽 7 張（過去、現在、未來、對策、周遭、問者態度、最終結果）
+🎴 <b>四牌陣</b> — 深入分析，抽 4 張(現在心態／過去／現在／未來)
+✡️ <b>六芒星</b> — 全面解析，抽 7 張(過去、現在、未來、對策、周遭、問者態度、最終結果)
+
+<b>【兩種解讀模式】</b>
+抽完牌後可選擇：
+📋 <b>複製完整 Prompt</b> — 適合有自己 LLM 額度（ChatGPT、Claude 等）的使用者，可獲得最完整深度的解讀
+🔮 <b>內建大師解析</b> — 直接由本機器人解讀，方便快速
 
 <b>【追問功能】</b>
-占卜完成後可直接輸入文字繼續追問，大師將結合牌面持續解析。
+解讀完成後可直接輸入文字繼續追問，由內建大師結合牌面持續解析。
 點擊「🔄 結束追問，開啟新占卜」重置記憶，開始全新問題。
 
 <b>【使用限制】</b>
-每日免費占卜 7 次，隔天自動重置。
+每日免費占卜 7 次，隔天自動重置（每次抽牌計 1 次，無論選擇哪種解讀模式）。
 
 <b>【VIP 模式】</b>
 輸入 <code>/pwd 你的密碼</code> 解鎖無限次數占卜。
@@ -153,7 +296,7 @@ def get_card_image(url: str, is_reversed: bool) -> BytesIO:
 async def get_gemini_response(prompt: str) -> str:
     for attempt in range(3):
         try:
-            return client.models.generate_content(model="gemini-2.5-flash", contents=prompt).text
+            return client.models.generate_content(model=GEMINI_MODEL, contents=prompt).text
         except Exception as e:
             if ("503" in str(e) or "429" in str(e)) and attempt < 2:
                 print(f"⚠️ API 擁塞，等待後重試（第 {attempt + 2} 次）...")
@@ -253,24 +396,24 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_follow_up(
     update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str
 ) -> None:
+    """使用獨立的 FOLLOW_UP_PROMPT 處理追問，避免重新解讀整副牌。"""
     await update.message.reply_text("✨ 大師正在傾聽你的疑惑...")
 
-    combined_question = (
-        f"{context.user_data.get('question', '未知問題')}\n"
-        f"(💡本次為後續追問，前情提要：{context.user_data.get('reading_context', '')}。"
-        f"使用者最新追問：「{user_text}」)"
-    )
-    prompt = READING_PROMPT.format(
-        question=combined_question,
+    prompt = FOLLOW_UP_PROMPT.format(
+        question=context.user_data.get("question", "未知問題"),
         layout=context.user_data.get("layout_name", "塔羅牌陣"),
         cards="\n".join(context.user_data.get("card_results", ["無抽牌紀錄"])),
+        reading_context=context.user_data.get(
+            "reading_context", "（無先前脈絡，使用者可能在自己的 LLM 進行了解讀）"
+        ) or "（無先前脈絡）",
+        follow_up=user_text,
     )
 
     try:
         response_text = await get_gemini_response(prompt)
 
         new_entry = f"\n\n使用者追問：「{user_text}」\n大師回答：{response_text}"
-        full_context = context.user_data["reading_context"] + new_entry
+        full_context = context.user_data.get("reading_context", "") + new_entry
         if len(full_context) > CONTEXT_MAX_CHARS:
             full_context = "（前段對話已省略）\n" + full_context[-CONTEXT_MAX_CHARS:]
         context.user_data["reading_context"] = full_context
@@ -281,21 +424,105 @@ async def handle_follow_up(
         await update.message.reply_text(f"❌ 靈力中斷：{e}")
 
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
+# ── Mode handlers (after cards drawn) ─────────────────────────────────────────
 
-    if query.data == "new_reading":
-        context.user_data["is_follow_up_mode"] = False
-        context.user_data["reading_context"] = ""
+async def _present_mode_selection(query) -> None:
+    """抽完牌後顯示「複製 Prompt / 內建解析」兩個按鈕。"""
+    mode_kb = [
+        [InlineKeyboardButton("📋 複製完整 Prompt 自行解析", callback_data="mode_copy")],
+        [InlineKeyboardButton("🔮 用內建大師解析",            callback_data="mode_builtin")],
+    ]
+    await query.message.reply_text(
+        "✨ 牌已揭曉，請選擇解讀方式：\n\n"
+        "📋 <b>複製 Prompt</b>\n"
+        "取得高品質提示詞，貼到你自己的 LLM(ChatGPT、Claude、Gemini Pro 等)。"
+        "適合想要更深入解讀、或希望節省機器人額度的使用者。\n\n"
+        "🔮 <b>內建大師</b>\n"
+        "由本機器人內建模型直接解析，方便快速。",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(mode_kb),
+    )
+
+
+async def _handle_mode_copy(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """產生完整 prompt 並以 <pre> 格式發送，方便使用者一鍵複製。"""
+    full_prompt = READING_PROMPT_FULL.format(
+        question=context.user_data.get("question", "未指定問題"),
+        layout=context.user_data.get("layout_name", ""),
+        cards="\n".join(context.user_data.get("card_results", [])),
+    )
+
+    # <pre> 內容須做 HTML escape，避免特殊字元被 Telegram 誤判為 tag
+    escaped = html.escape(full_prompt)
+    pre_message = f"<pre>{escaped}</pre>"
+
+    # Telegram 單則訊息上限 4096 字元，留一點 buffer
+    if len(pre_message) > 4000:
+        # 極端情況：問題或牌組過長。分段發送
         await query.message.reply_text(
-            "🌙 記憶已重置。\n請直接輸入你【新的問題】，我將為你開啟全新的占卜。"
+            "📋 <b>完整 Prompt（內容較長，分段呈現，請依序複製貼上）：</b>",
+            parse_mode="HTML",
         )
-        return
+        chunk_size = 3500
+        for i in range(0, len(full_prompt), chunk_size):
+            chunk = full_prompt[i:i + chunk_size]
+            await query.message.reply_text(
+                f"<pre>{html.escape(chunk)}</pre>",
+                parse_mode="HTML",
+            )
+    else:
+        await query.message.reply_text(
+            f"📋 <b>請長按下方文字框複製，貼到你的 LLM：</b>\n\n{pre_message}",
+            parse_mode="HTML",
+        )
 
-    if query.data not in LAYOUTS:
-        return
+    reset_kb = [[InlineKeyboardButton("🔄 結束，開啟新占卜", callback_data="new_reading")]]
+    await query.message.reply_text(
+        "✅ Prompt 已生成。\n\n"
+        "💡 將上方內容貼到 ChatGPT、Claude 或 Gemini 等任何 LLM，即可獲得完整解讀。\n"
+        "若想針對這次牌組做進一步追問，<b>可直接在這邊輸入文字</b>，將由內建大師回應。",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(reset_kb),
+    )
 
+    # 進入追問模式（即使沒用內建解析也允許追問；reading_context 為空時 prompt 有 fallback）
+    context.user_data["is_follow_up_mode"] = True
+    context.user_data["reading_context"] = ""
+
+
+async def _handle_mode_builtin(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """用內建 Gemini Flash Lite 跑 LITE 版 prompt。"""
+    await query.message.reply_text("✨ 大師正在感應牌面連結，深度解析中...")
+
+    prompt = READING_PROMPT_LITE.format(
+        question=context.user_data.get("question", "未指定問題"),
+        layout=context.user_data.get("layout_name", ""),
+        cards="\n".join(context.user_data.get("card_results", [])),
+    )
+
+    try:
+        response_text = await get_gemini_response(prompt)
+
+        context.user_data["is_follow_up_mode"] = True
+        context.user_data["reading_context"]   = f"初次解析：\n{response_text}"
+
+        await safe_reply_with_html(query.message, response_text)
+
+        reset_kb = [[InlineKeyboardButton("🔄 結束追問，開啟新占卜", callback_data="new_reading")]]
+        await safe_reply_with_html(
+            query.message,
+            "💡 <b>占卜完成。</b>\n如果你對某張牌有疑問，或想更深入了解，"
+            "<b>請直接在此輸入文字追問</b>。\n\n或者點擊下方按鈕問全新的問題：",
+            InlineKeyboardMarkup(reset_kb),
+        )
+    except Exception as e:
+        await query.message.reply_text(f"❌ 靈力中斷：{e}")
+
+
+# ── Layout selection (cards drawing) ─────────────────────────────────────────
+
+async def _handle_layout_selection(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """抽牌、發送牌面圖、然後請使用者選擇解讀模式。"""
     count, layout_name, positions = LAYOUTS[query.data]
 
     if not consume_usage(context.user_data):
@@ -319,33 +546,42 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             await asyncio.sleep(1.5)
 
-        await query.message.reply_text("✨ 所有牌面已揭曉。大師正在感應牌面連結，深度解析中...")
-
+        # 儲存抽牌結果，供後續模式選擇使用
         context.user_data["layout_name"]  = layout_name
         context.user_data["card_results"] = card_results
 
-        prompt = READING_PROMPT.format(
-            question=context.user_data.get("question", "未指定問題"),
-            layout=layout_name,
-            cards="\n".join(card_results),
-        )
-        response_text = await get_gemini_response(prompt)
-
-        context.user_data["is_follow_up_mode"] = True
-        context.user_data["reading_context"]   = f"初次解析：\n{response_text}"
-
-        await safe_reply_with_html(query.message, response_text)
-
-        reset_kb = [[InlineKeyboardButton("🔄 結束追問，開啟新占卜", callback_data="new_reading")]]
-        await safe_reply_with_html(
-            query.message,
-            "💡 <b>占卜完成。</b>\n如果你對某張牌有疑問，或想更深入了解，"
-            "<b>請直接在此輸入文字追問</b>。\n\n或者點擊下方按鈕問全新的問題：",
-            InlineKeyboardMarkup(reset_kb),
-        )
+        # 顯示解讀模式按鈕
+        await _present_mode_selection(query)
 
     except Exception as e:
         await query.message.reply_text(f"❌ 靈力中斷：{e}")
+
+
+# ── Main button dispatcher ────────────────────────────────────────────────────
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "new_reading":
+        context.user_data["is_follow_up_mode"] = False
+        context.user_data["reading_context"] = ""
+        await query.message.reply_text(
+            "🌙 記憶已重置。\n請直接輸入你【新的問題】，我將為你開啟全新的占卜。"
+        )
+        return
+
+    if query.data == "mode_copy":
+        await _handle_mode_copy(query, context)
+        return
+
+    if query.data == "mode_builtin":
+        await _handle_mode_builtin(query, context)
+        return
+
+    if query.data in LAYOUTS:
+        await _handle_layout_selection(query, context)
+        return
 
 # ── Server & Entry ────────────────────────────────────────────────────────────
 
