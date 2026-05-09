@@ -29,7 +29,8 @@ from telegram.ext import (
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY")
 SECRET_PASSWORD = os.environ.get("VIP_PASSWORD", "未設定密碼")
-GEMINI_MODEL    = "gemini-3.1-flash-lite"
+GEMINI_MODEL_PRIMARY  = "gemini-3.1-flash-lite"
+GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"
 DAILY_LIMIT     = 7
 CONTEXT_MAX_CHARS = 2000  # 追問記憶上限，超過則截掉最舊的部分
 
@@ -294,15 +295,48 @@ def get_card_image(url: str, is_reversed: bool) -> BytesIO:
 
 
 async def get_gemini_response(prompt: str) -> str:
-    for attempt in range(3):
-        try:
-            return client.models.generate_content(model=GEMINI_MODEL, contents=prompt).text
-        except Exception as e:
-            if ("503" in str(e) or "429" in str(e)) and attempt < 2:
-                print(f"⚠️ API 擁塞，等待後重試（第 {attempt + 2} 次）...")
-                await asyncio.sleep(2)
-                continue
-            raise
+    """先嘗試 primary 模型，若持續擁塞 (503/429) 則切換到 fallback 模型。
+
+    流程：
+    1. 用 primary 模型呼叫，若拿到 503/429 等候 2 秒重試一次。
+    2. primary 仍然擁塞 → 切換到 fallback 模型，同樣最多重試 2 次。
+    3. 非擁塞類錯誤（auth、網路、模型名稱錯誤等）直接拋出，不做 fallback。
+    """
+    models = [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK]
+    last_error: Exception | None = None
+
+    for model_idx, model in enumerate(models):
+        is_last_model = (model_idx == len(models) - 1)
+
+        for attempt in range(2):
+            try:
+                return client.models.generate_content(model=model, contents=prompt).text
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                is_throttle = "503" in err_str or "429" in err_str
+
+                # 非擁塞類錯誤直接拋出，不重試也不 fallback
+                if not is_throttle:
+                    raise
+
+                is_last_attempt = (attempt == 1)
+
+                if not is_last_attempt:
+                    # 同模型再試一次
+                    print(f"⚠️ {model} 擁塞，等待 2 秒後重試...")
+                    await asyncio.sleep(2)
+                    continue
+
+                # 此模型最後一次嘗試也失敗
+                if is_last_model:
+                    raise
+                print(f"⚠️ 主模型 {model} 持續擁塞，切換到備用模型 {models[model_idx + 1]}...")
+                break  # 跳出內圈，換下一個模型
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("get_gemini_response 邏輯異常結束")
 
 
 async def safe_reply_with_html(message_obj, text: str, reply_markup=None) -> None:
