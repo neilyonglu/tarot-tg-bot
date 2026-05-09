@@ -59,14 +59,14 @@ READING_PROMPT_FULL = """\
 
 【占卜基本資訊】
 問者問題：{question}
-使用牌陣：{spread_name}
+使用牌陣：{layout}
 *牌陣位置意義參考：
 - 單張占卜：針對問題的核心指引或整體狀態。
 - 四牌陣：1. 現在心態 / 2. 過去事件 / 3. 現在事件 / 4. 未來發展（順著目前軌跡發展的可能走向）。
 - 六芒星牌陣：1. 過去 / 2. 現在 / 3. 未來 / 4. 具體建議 / 5. 周遭環境與他人影響 / 6. 問者的潛意識態度 / 7. 最終可能結果。
 
 抽牌結果：
-{cards_drawn}
+{cards}
 
 【給問者的正式回覆要求】
 1. 自然對話：請以有經驗、具備同理心但不失理性的諮詢師口吻，寫出一段自然流暢的解讀文章，就像面對面跟朋友對話一樣。
@@ -439,49 +439,50 @@ async def _present_mode_selection(query) -> None:
 
 async def _handle_mode_copy(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """產生完整 prompt 並以 <pre> 格式發送，方便使用者一鍵複製。"""
-    full_prompt = READING_PROMPT_FULL.format(
-        question=context.user_data.get("question", "未指定問題"),
-        layout=context.user_data.get("layout_name", ""),
-        cards="\n".join(context.user_data.get("card_results", [])),
-    )
-
-    # <pre> 內容須做 HTML escape，避免特殊字元被 Telegram 誤判為 tag
-    escaped = html.escape(full_prompt)
-    pre_message = f"<pre>{escaped}</pre>"
-
-    # Telegram 單則訊息上限 4096 字元，留一點 buffer
-    if len(pre_message) > 4000:
-        # 極端情況：問題或牌組過長。分段發送
-        await query.message.reply_text(
-            "📋 <b>完整 Prompt（內容較長，分段呈現，請依序複製貼上）：</b>",
-            parse_mode="HTML",
+    try:
+        full_prompt = READING_PROMPT_FULL.format(
+            question=context.user_data.get("question", "未指定問題"),
+            layout=context.user_data.get("layout_name", ""),
+            cards="\n".join(context.user_data.get("card_results", [])),
         )
-        chunk_size = 3500
-        for i in range(0, len(full_prompt), chunk_size):
-            chunk = full_prompt[i:i + chunk_size]
+
+        # <pre> 內容須做 HTML escape，避免特殊字元被 Telegram 誤判為 tag
+        escaped = html.escape(full_prompt)
+        pre_message = f"<pre>{escaped}</pre>"
+
+        # Telegram 單則訊息上限 4096 字元，留一點 buffer
+        if len(pre_message) > 4000:
             await query.message.reply_text(
-                f"<pre>{html.escape(chunk)}</pre>",
+                "📋 <b>完整 Prompt（內容較長，分段呈現，請依序複製貼上）：</b>",
                 parse_mode="HTML",
             )
-    else:
+            chunk_size = 3500
+            for i in range(0, len(full_prompt), chunk_size):
+                chunk = full_prompt[i:i + chunk_size]
+                await query.message.reply_text(
+                    f"<pre>{html.escape(chunk)}</pre>",
+                    parse_mode="HTML",
+                )
+        else:
+            await query.message.reply_text(
+                f"📋 <b>請長按下方文字框複製，貼到你的 LLM：</b>\n\n{pre_message}",
+                parse_mode="HTML",
+            )
+
+        reset_kb = [[InlineKeyboardButton("🔄 結束，開啟新占卜", callback_data="new_reading")]]
         await query.message.reply_text(
-            f"📋 <b>請長按下方文字框複製，貼到你的 LLM：</b>\n\n{pre_message}",
+            "✅ Prompt 已生成。\n\n"
+            "💡 將上方內容貼到 ChatGPT、Claude 或 Gemini 等任何 LLM，即可獲得完整解讀。\n"
+            "若想針對這次牌組做進一步追問，<b>可直接在這邊輸入文字</b>，將由內建大師回應。",
             parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(reset_kb),
         )
 
-    reset_kb = [[InlineKeyboardButton("🔄 結束，開啟新占卜", callback_data="new_reading")]]
-    await query.message.reply_text(
-        "✅ Prompt 已生成。\n\n"
-        "💡 將上方內容貼到 ChatGPT、Claude 或 Gemini 等任何 LLM，即可獲得完整解讀。\n"
-        "若想針對這次牌組做進一步追問，<b>可直接在這邊輸入文字</b>，將由內建大師回應。",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(reset_kb),
-    )
+        context.user_data["is_follow_up_mode"] = True
+        context.user_data["reading_context"] = ""
 
-    # 進入追問模式（即使沒用內建解析也允許追問；reading_context 為空時 prompt 有 fallback）
-    context.user_data["is_follow_up_mode"] = True
-    context.user_data["reading_context"] = ""
-
+    except Exception as e:
+        await query.message.reply_text(f"❌ 產生 Prompt 時發生錯誤：{e}")
 
 async def _handle_mode_builtin(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     """用內建 Gemini Flash Lite 跑 LITE 版 prompt。"""
