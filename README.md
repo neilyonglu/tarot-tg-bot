@@ -1,79 +1,40 @@
-# 塔羅占卜機器人
+# 塔羅占卜大師
 
-Telegram 塔羅占卜機器人，使用萊德偉特牌組，透過 Gemini AI 提供深度解析。
+在 Telegram 抽塔羅牌，選擇內建解讀，或複製 Prompt 到自己的 ChatGPT、Claude 等 LLM 解析。
 
-## 功能
+👉 [開啟 @iamtarotmaster_bot](https://t.me/iamtarotmaster_bot)
 
-- **三種牌陣**：單張、四牌陣（心態/過去/現在/未來）、六芒星（7張深度分析）
-- **正逆位**：隨機決定正/逆位，自動旋轉圖片
-- **AI 解析**：Gemini 3.1 Flash lite 根據問題與牌面給出客製化詮釋
-- **後續追問**：占卜完成後可繼續追問，保留最近的對話脈絡
-- **使用限制**：每日免費 7 次；VIP 密碼解鎖無限制
-- **狀態查詢**：`/status` 顯示剩餘抽牌額度與 VIP 狀態；額度於台灣時間每日 00:00 重置
-- **自行解析**：內建 AI 失敗時仍可複製完整 Prompt，交給自己的 LLM 解析
+## 開始占卜
 
-## 專案結構
+1. 開啟 bot，點選「開始」或輸入 `/start`。
+2. 輸入想問的問題，描述目前的情況與想釐清的事情。
+3. 選擇牌陣，bot 會抽牌並顯示每張牌的正位或逆位。
+4. 選擇「內建大師解析」，或「複製完整 Prompt 自行解析」。
 
-```
-tarot-tg-bot/
-├── cards/               # 78 public-domain card images
-├── app.py               # Bot entry point
-├── download_cards.py    # Download missing images from Wikimedia
-├── test_app.py          # Offline regression checks
-├── tarot_data.json      # Card names and image URLs
-├── pyproject.toml       # Project metadata and dependencies
-├── uv.lock              # Locked dependency versions
-├── .python-version      # Python version for uv
-├── .env.example         # Environment configuration template
-└── requirements.txt     # Generated dependencies for pip-based deployments
-```
+| 牌陣 | 張數 | 牌位 |
+|---|---:|---|
+| 單張 | 1 | 核心指引 |
+| 四牌陣 | 4 | 現在心態、過去事件、現在事件、未來事件 |
+| 六芒星 | 7 | 過去、現在、未來、對應策略、周遭狀況、問者態度、最後結果 |
 
-## 環境變數
+## 解讀與追問
 
-| 變數名稱 | 說明 |
+- **內建解讀**：直接在 Telegram 閱讀解析，之後可輸入文字繼續追問。
+- **自行解析**：將完整 Prompt 貼到自己的 LLM；如果分成多則訊息，請依序複製。
+- **內建解析暫時無法使用**：點選複製 Prompt，交給自己的 LLM 解析同一組牌，不需要重新抽牌。
+- **開始新問題**：點選「結束追問，開啟新占卜」，或輸入 `/start`。
+
+## 指令
+
+| 指令 | 操作 |
 |---|---|
-| `TELEGRAM_TOKEN` | Telegram Bot Token |
-| `GEMINI_API_KEY` | Google Gemini API Key |
-| `VIP_PASSWORD` | VIP 解鎖密碼；留空時停用 VIP 解鎖 |
-| `PORT` | 伺服器監聽 Port（預設 10000） |
+| `/start` | 開始新占卜，清除這次追問脈絡 |
+| `/manual` | 查看使用手冊 |
+| `/status` | 查看今日剩餘抽牌額度與 VIP 狀態 |
+| `/pwd 你的密碼` | 持有 VIP 密碼時解鎖無限抽牌；未開放時無法使用 |
 
-## 本地開發
+## 使用額度
 
-先安裝 [uv](https://docs.astral.sh/uv/getting-started/installation/)，並在專案根目錄執行：
+每日免費抽牌 7 次，於台灣時間每日 00:00 重置。每次抽牌計 1 次，選擇解讀方式與追問不另外扣除抽牌額度。
 
-```powershell
-# Create the virtual environment and install locked dependencies.
-uv sync --locked
-
-# Copy the template, then fill in your keys and a private VIP password.
-Copy-Item .env.example .env
-
-# Start the bot after editing .env.
-uv run --env-file .env python app.py
-```
-
-卡牌圖片已包含在專案內；需要補下載時執行：
-
-```powershell
-uv run python download_cards.py
-```
-
-`uv run` 會自動使用專案的 `.venv`，不需要手動啟用虛擬環境。請勿提交 `.env`。
-
-啟動時會檢查 Token、API Key 與 Port；範例中的佔位文字必須替換。使用者狀態保存在記憶體內，重啟後重置；追問不另外扣除抽牌額度。
-
-離線檢查（不呼叫 Telegram 或 Gemini API）：
-
-```powershell
-uv run python test_app.py
-```
-
-新增或更新依賴時，以 `pyproject.toml` 與 `uv.lock` 為準；仍使用 pip 的部署環境可安裝 `requirements.txt`。修改依賴後重新匯出：
-
-```powershell
-uv export --locked --no-hashes --no-dev --no-emit-project --output-file requirements.txt
-```
-
-## 圖片版權
-
-使用 **萊德偉特塔羅牌（Rider-Waite Tarot）** 原版圖片，出版於 1909 年，現已進入公共領域（Public Domain）。圖片來源為 Wikimedia Commons。
+新問題會讓舊占卜按鈕失效；請使用最新的按鈕。Bot 不提供永久保存的占卜歷史，需要留存時請自行複製訊息。

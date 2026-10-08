@@ -1,0 +1,77 @@
+name: Test and deploy tarot bot
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tarot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and test the Linux image
+        run: |
+          docker build --tag tarot-ci .
+          docker run --rm --network none tarot-ci python test_app.py
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: [self-hosted, Linux, X64, tarot]
+    timeout-minutes: 15
+    env:
+      DEPLOY_SHA: ${{ github.sha }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: /mnt/ssd/self-proj/tarot-tg-bot
+    steps:
+      - name: Update main, test, and deploy
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = main
+          git diff --quiet
+          git diff --cached --quiet
+          git fetch origin main
+          git merge --ff-only "$DEPLOY_SHA"
+          test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
+          docker compose build bot
+          docker compose up --detach --wait --wait-timeout 90 bot
+          docker compose ps
+
+      - name: Notify Telegram
+        run: |
+          docker compose exec -T bot python - <<'PY'
+          import os
+          import requests
+
+          token = os.environ['TELEGRAM_TOKEN']
+          try:
+              response = requests.post(
+                  f'https://api.telegram.org/bot{token}/sendMessage',
+                  json={
+                      'chat_id': 6501701404,
+                      'text': '✅ Server 已更新 main，Docker 建置測試與容器健康檢查通過。',
+                  },
+                  timeout=30,
+              )
+              result = response.json()
+          except (requests.RequestException, ValueError) as error:
+              raise SystemExit(f'Telegram notification failed: {type(error).__name__}') from None
+          if not result.get('ok'):
+              raise SystemExit('Telegram notification rejected by API.')
+          print('Telegram deployment notification sent.')
+          PY
