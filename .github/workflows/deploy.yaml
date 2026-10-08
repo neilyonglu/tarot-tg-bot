@@ -29,7 +29,7 @@ jobs:
     concurrency:
       group: tarot-production
       cancel-in-progress: false
-    runs-on: [self-hosted, Linux, X64, tarot]
+    runs-on: [self-hosted, Linux, X64, tarot-tg-bot]
     timeout-minutes: 15
     env:
       DEPLOY_SHA: ${{ github.sha }}

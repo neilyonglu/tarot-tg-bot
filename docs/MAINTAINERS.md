@@ -93,11 +93,11 @@ Runner 安裝一次即可：
 2. 在主機另建 runner 目錄，與部署目錄分開：
 
    ```bash
-   mkdir -p /mnt/ssd/self-proj/actions-runner-tarot
-   cd /mnt/ssd/self-proj/actions-runner-tarot
+   mkdir -p /mnt/ssd/self-proj/actions-runners/tarot
+   cd /mnt/ssd/self-proj/actions-runners/tarot
    ```
 
-3. 執行 GitHub 頁面產生的下載與解壓指令；設定 runner 時，加上 `--name genton-tarot --labels tarot`。註冊 Token 只在主機上使用，不要提交或貼到聊天。
+3. 執行 GitHub 頁面產生的下載與解壓指令；設定 runner 時，加上 `--name genton-server --labels tarot-tg-bot`。已註冊的 runner 可在 GitHub 的 Labels 設定新增 `tarot-tg-bot`，不用重新註冊。註冊 Token 只在主機上使用，不要提交或貼到聊天。
 4. 確認執行 runner 的 `genton` 帳號能直接使用 Docker。若 `docker info` 顯示權限不足：
 
    ```bash
