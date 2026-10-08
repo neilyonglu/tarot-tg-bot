@@ -3,10 +3,12 @@ import json
 import time
 import requests
 from urllib.parse import urlparse
+from pathlib import Path
 
-os.makedirs('cards', exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent
+(BASE_DIR / 'cards').mkdir(exist_ok=True)
 
-with open('tarot_data.json', 'r', encoding='utf-8') as f:
+with (BASE_DIR / 'tarot_data.json').open(encoding='utf-8') as f:
     data = json.load(f)
 
 headers = {'User-Agent': 'TelegramTarotBot/1.0 (https://github.com/neilyonglu/tarot-tg-bot)'}
@@ -15,7 +17,7 @@ success, failed = 0, []
 
 for name, url in data.items():
     filename = os.path.basename(urlparse(url).path)
-    dest = os.path.join('cards', filename)
+    dest = BASE_DIR / 'cards' / filename
     if os.path.exists(dest):
         print(f"[skip] {name}")
         success += 1

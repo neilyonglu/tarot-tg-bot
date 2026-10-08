@@ -1,0 +1,12 @@
+[project]
+name = "tarot-tg-bot"
+version = "0.1.0"
+description = "Telegram tarot bot with Gemini-powered readings"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "google-genai",
+    "pillow",
+    "python-telegram-bot",
+    "requests",
+]

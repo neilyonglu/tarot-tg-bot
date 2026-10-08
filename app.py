@@ -6,15 +6,18 @@ import random
 import re
 import threading
 import time
-from datetime import date
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import BytesIO
+from pathlib import Path
+from secrets import token_hex
 from urllib.parse import urlparse
 
 import requests
 from google import genai
 from PIL import Image
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -28,15 +31,19 @@ from telegram.ext import (
 
 TELEGRAM_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY  = os.environ.get("GEMINI_API_KEY")
-SECRET_PASSWORD = os.environ.get("VIP_PASSWORD", "未設定密碼")
+SECRET_PASSWORD = os.environ.get("VIP_PASSWORD", "").strip()
+if SECRET_PASSWORD.startswith("replace-with-"):
+    SECRET_PASSWORD = ""
 GEMINI_MODEL_PRIMARY  = "gemini-3.1-flash-lite"
 GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"
 DAILY_LIMIT     = 7
-CONTEXT_MAX_CHARS = 2000  # 追問記憶上限，超過則截掉最舊的部分
+CONTEXT_MAX_CHARS = 2000  # Follow-up context limit; discard the oldest text when exceeded.
+BASE_DIR = Path(__file__).resolve().parent
+TAIWAN_TIME = timezone(timedelta(hours=8))
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = None
 
-with open("tarot_data.json", "r", encoding="utf-8") as f:
+with (BASE_DIR / "tarot_data.json").open(encoding="utf-8") as f:
     TAROT_DATA = json.load(f)
 
 LAYOUTS = {
@@ -47,8 +54,8 @@ LAYOUTS = {
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-# === FULL 版：給使用者複製到自己的 LLM (ChatGPT/Claude/Gemini Pro 等) ===
-# 不限制 Markdown，讓對方 LLM 自然格式化；指令更完整。
+# === FULL: for users to copy into their own LLM (ChatGPT/Claude/Gemini Pro, etc.) ===
+# Detailed instructions with unrestricted Markdown formatting.
 READING_PROMPT_FULL = """\
 這是一份塔羅占卜解讀請求。請扮演專業的塔羅諮詢師，使用萊德偉特體系（Rider-Waite-Smith）。你的任務不是預測未來，而是透過牌面協助問者看清當下處境、盲點與選擇空間。
 
@@ -77,8 +84,8 @@ READING_PROMPT_FULL = """\
 現在，請直接輸出你給問者的解讀回覆：\
 """
 
-# === LITE 版：給內建 Gemini Flash Lite 用 ===
-# 精簡指令；嚴格要求 Telegram HTML，禁止 Markdown。
+# === LITE: for the built-in Gemini Flash Lite model ===
+# Concise instructions requiring Telegram HTML and prohibiting Markdown.
 READING_PROMPT_LITE = """\
 你是專業的塔羅諮詢師，使用萊德偉特體系（RWS）。
 你的任務不是預測未來，而是透過牌面協助問者釐清當下處境與選擇空間。
@@ -122,7 +129,7 @@ READING_PROMPT_LITE = """\
 現在，請直接輸出你給問者的解讀回覆：\
 """
 
-# === 追問版：內建模式才會用到 ===
+# === Follow-up: responses use the built-in model ===
 FOLLOW_UP_PROMPT = """\
 你是專業的塔羅諮詢師，正在以自然、對話的口吻回應問者對先前牌陣解讀的追問。
 
@@ -179,7 +186,7 @@ MANUAL_TEXT = """\
 點擊「🔄 結束追問，開啟新占卜」重置記憶，開始全新問題。
 
 <b>【使用限制】</b>
-每日免費占卜 7 次，隔天自動重置（每次抽牌計 1 次，無論選擇哪種解讀模式）。
+每日免費占卜 7 次，台灣時間午夜重置（每次抽牌計 1 次，無論選擇哪種解讀模式）。
 
 <b>【VIP 模式】</b>
 輸入 <code>/pwd 你的密碼</code> 解鎖無限次數占卜。
@@ -187,13 +194,14 @@ MANUAL_TEXT = """\
 <b>【指令列表】</b>
 /start — 重新開始，重置追問記憶
 /manual — 查看此使用手冊
+/status — 查看剩餘抽牌額度與 VIP 狀態
 /pwd — 解鎖 VIP 無限模式\
 """
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 def _reset_daily_if_needed(user_data: dict) -> None:
-    today = date.today().isoformat()
+    today = datetime.now(TAIWAN_TIME).date().isoformat()
     if user_data.get("last_usage_date") != today:
         user_data["last_usage_date"] = today
         user_data["usage_count"] = 0
@@ -220,12 +228,12 @@ def consume_usage(user_data: dict) -> bool:
 
 def get_card_image(url: str, is_reversed: bool) -> BytesIO:
     filename = os.path.basename(urlparse(url).path)
-    local_path = os.path.join("cards", filename)
+    local_path = BASE_DIR / "cards" / filename
 
     if os.path.exists(local_path):
         img = Image.open(local_path)
     else:
-        # Fallback：本地圖檔遺失時從 Wikimedia 抓取
+        # Fetch from Wikimedia if the local image is missing.
         headers = {"User-Agent": "TelegramTarotBot/1.0 (https://github.com/neilyonglu/tarot-tg-bot)"}
         for attempt in range(3):
             try:
@@ -254,65 +262,82 @@ def get_card_image(url: str, is_reversed: bool) -> BytesIO:
 
 
 async def get_gemini_response(prompt: str) -> str:
-    """先嘗試 primary 模型，若持續擁塞 (503/429) 則切換到 fallback 模型。
+    """Try the primary model, then fall back on persistent 503/429 errors.
 
-    流程：
-    1. 用 primary 模型呼叫，若拿到 503/429 等候 2 秒重試一次。
-    2. primary 仍然擁塞 → 切換到 fallback 模型，同樣最多重試 2 次。
-    3. 非擁塞類錯誤（auth、網路、模型名稱錯誤等）直接拋出，不做 fallback。
+    1. Retry the primary model once after a two-second delay on 503/429.
+    2. If both attempts fail, try the fallback model up to twice.
+    3. Raise other errors immediately without retrying or falling back.
     """
     models = [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK]
-    last_error: Exception | None = None
 
     for model_idx, model in enumerate(models):
         is_last_model = (model_idx == len(models) - 1)
 
         for attempt in range(2):
             try:
-                return client.models.generate_content(model=model, contents=prompt).text
+                response = await client.aio.models.generate_content(model=model, contents=prompt)
+                if not response.text:
+                    raise RuntimeError("AI 沒有回傳解讀，請複製 Prompt 自行解析。")
+                return response.text
             except Exception as e:
-                last_error = e
                 err_str = str(e)
                 is_throttle = "503" in err_str or "429" in err_str
 
-                # 非擁塞類錯誤直接拋出，不重試也不 fallback
+                # Raise other errors without retrying or falling back.
                 if not is_throttle:
                     raise
 
                 is_last_attempt = (attempt == 1)
 
                 if not is_last_attempt:
-                    # 同模型再試一次
+                    # Retry the same model once.
                     print(f"⚠️ {model} 擁塞，等待 2 秒後重試...")
                     await asyncio.sleep(2)
                     continue
 
-                # 此模型最後一次嘗試也失敗
+                # The final attempt for this model also failed.
                 if is_last_model:
                     raise
                 print(f"⚠️ 主模型 {model} 持續擁塞，切換到備用模型 {models[model_idx + 1]}...")
-                break  # 跳出內圈，換下一個模型
-
-    if last_error:
-        raise last_error
-    raise RuntimeError("get_gemini_response 邏輯異常結束")
+                break  # Leave the inner loop and try the next model.
 
 
 async def safe_reply_with_html(message_obj, text: str, reply_markup=None) -> None:
-    try:
-        await message_obj.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception:
-        clean = re.sub(r"<[^>]+>", "", text)
-        await message_obj.reply_text(clean, reply_markup=reply_markup)
+    if len(text.encode("utf-16-le")) <= 8000:
+        try:
+            await message_obj.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+            return
+        except BadRequest as error:
+            if "parse entities" not in str(error).lower():
+                raise
+    # ponytail: long replies use plain text; use Telegram entities if rich formatting is needed.
+    clean = html.unescape(re.sub(r"<[^>]+>", "", text))
+    for i in range(0, len(clean), 2000):
+        await message_obj.reply_text(
+            clean[i:i + 2000],
+            reply_markup=reply_markup if i + 2000 >= len(clean) else None,
+        )
+
+
+def _reset_reading(user_data: dict) -> None:
+    user_data.update(
+        reading_id=token_hex(8), is_follow_up_mode=False, reading_context="",
+        selection_pending=False, mode_pending=False,
+        question="", layout_name="", card_results=[],
+    )
+
+
+def _reading_callback(context, action: str) -> str:
+    return f"{action}:{context.user_data['reading_id']}"
 
 
 async def _activate_vip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """解鎖 VIP：刪除含密碼的原訊息，再發送確認通知。"""
+    """Unlock VIP, delete the password message, and send confirmation."""
     context.user_data["is_unlocked"] = True
     try:
         await update.message.delete()
     except Exception:
-        pass  # 私聊以外的場景可能沒有刪除權限
+        pass  # Deletion permission may be unavailable outside private chats.
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text="🔓 密碼正確！\n大師為你開啟了「無限靈力模式」✨，現在可無限制占卜！請直接輸入你想問的問題。",
@@ -324,13 +349,13 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands([
         BotCommand("start",  "🌙 重新開始占卜"),
         BotCommand("manual", "📖 使用手冊"),
+        BotCommand("status", "📊 剩餘額度與 VIP 狀態"),
         BotCommand("pwd",    "🔓 解鎖 VIP 模式"),
     ])
 
 
 async def send_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data["is_follow_up_mode"] = False
-    context.user_data["reading_context"] = ""
+    _reset_reading(context.user_data)
     await update.message.reply_text(
         "🌙 歡迎！請深呼吸，然後直接在此輸入你的問題，愈詳細愈好，並在心中默念3遍，我將為你開啟占卜。"
     )
@@ -340,7 +365,19 @@ async def handle_manual(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(MANUAL_TEXT, parse_mode="HTML")
 
 
+async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    remaining = get_remaining_uses(context.user_data)
+    vip = "已解鎖" if remaining is None else "未解鎖"
+    quota = "無限制" if remaining is None else f"{remaining} / {DAILY_LIMIT} 次"
+    await update.message.reply_text(
+        f"📊 今日剩餘抽牌額度：{quota}\nVIP：{vip}\n額度於台灣時間每日 00:00 重置。"
+    )
+
+
 async def handle_pwd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not SECRET_PASSWORD:
+        await update.message.reply_text("VIP 解鎖目前未開放。")
+        return
     if not context.args:
         await update.message.reply_text(
             "💡 請使用格式：\n<code>/pwd 你的密碼</code>\n來解鎖大師的無限靈力。",
@@ -357,7 +394,7 @@ async def handle_pwd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_text = update.message.text
 
-    if user_text == SECRET_PASSWORD:
+    if SECRET_PASSWORD and user_text == SECRET_PASSWORD:
         await _activate_vip(update, context)
         return
 
@@ -373,15 +410,18 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     limit_hint = f"\n(💡 今日抽牌額度剩餘：{remaining} 次)" if remaining is not None else ""
+    _reset_reading(context.user_data)
     context.user_data["question"] = user_text
+    context.user_data["selection_pending"] = True
 
     keyboard = [
-        [InlineKeyboardButton("🔮 單張 (快速解惑)",              callback_data="draw_1")],
-        [InlineKeyboardButton("🎴 四牌陣 (心態/過去/現在/未來)", callback_data="draw_4")],
-        [InlineKeyboardButton("✡️ 六芒星 (深入分析與對策)",      callback_data="draw_hexa")],
+        [InlineKeyboardButton("🔮 單張 (快速解惑)",              callback_data=_reading_callback(context, "draw_1"))],
+        [InlineKeyboardButton("🎴 四牌陣 (心態/過去/現在/未來)", callback_data=_reading_callback(context, "draw_4"))],
+        [InlineKeyboardButton("✡️ 六芒星 (深入分析與對策)",      callback_data=_reading_callback(context, "draw_hexa"))],
     ]
-    await update.message.reply_text(
-        f"✅ 已感應問題：「{user_text}」{limit_hint}\n請選擇牌陣：",
+    await safe_reply_with_html(
+        update.message,
+        f"✅ 已感應問題：「{html.escape(user_text)}」{limit_hint}\n請選擇牌陣：",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -389,7 +429,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_follow_up(
     update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str
 ) -> None:
-    """使用獨立的 FOLLOW_UP_PROMPT 處理追問，避免重新解讀整副牌。"""
+    """Use FOLLOW_UP_PROMPT to answer follow-ups without rereading all cards."""
     await update.message.reply_text("✨ 大師正在傾聽你的疑惑...")
 
     prompt = FOLLOW_UP_PROMPT.format(
@@ -411,21 +451,23 @@ async def handle_follow_up(
             full_context = "（前段對話已省略）\n" + full_context[-CONTEXT_MAX_CHARS:]
         context.user_data["reading_context"] = full_context
 
-        reset_kb = [[InlineKeyboardButton("🔄 結束追問，開啟新占卜", callback_data="new_reading")]]
+        reset_kb = [[InlineKeyboardButton("🔄 結束追問，開啟新占卜", callback_data=_reading_callback(context, "new_reading"))]]
         await safe_reply_with_html(update.message, response_text, InlineKeyboardMarkup(reset_kb))
     except Exception as e:
-        await update.message.reply_text(f"❌ 靈力中斷：{e}")
+        print(f"Follow-up failed: {e}")
+        await update.message.reply_text("❌ 內建解析暫時無法使用，可複製 Prompt 到自己的 LLM 繼續解析。")
+        await _present_mode_selection(update.message, context)
 
 
 # ── Mode handlers (after cards drawn) ─────────────────────────────────────────
 
-async def _present_mode_selection(query) -> None:
-    """抽完牌後顯示「複製 Prompt / 內建解析」兩個按鈕。"""
+async def _present_mode_selection(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the copy-prompt and built-in reading buttons after drawing cards."""
     mode_kb = [
-        [InlineKeyboardButton("📋 複製完整 Prompt 自行解析", callback_data="mode_copy")],
-        [InlineKeyboardButton("🔮 用內建大師解析",            callback_data="mode_builtin")],
+        [InlineKeyboardButton("📋 複製完整 Prompt 自行解析", callback_data=_reading_callback(context, "mode_copy"))],
+        [InlineKeyboardButton("🔮 用內建大師解析",            callback_data=_reading_callback(context, "mode_builtin"))],
     ]
-    await query.message.reply_text(
+    sent = await message.reply_text(
         "✨ 牌已揭曉，請選擇解讀方式：\n\n"
         "📋 <b>複製 Prompt</b>\n"
         "取得高品質提示詞，貼到你自己的 LLM(ChatGPT、Claude、Gemini Pro 等)。"
@@ -435,10 +477,11 @@ async def _present_mode_selection(query) -> None:
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(mode_kb),
     )
+    context.user_data["mode_pending"] = (sent.chat_id, sent.message_id)
 
 
 async def _handle_mode_copy(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """產生完整 prompt 並以 <pre> 格式發送，方便使用者一鍵複製。"""
+    """Send the full prompt in a <pre> block for easy copying."""
     try:
         full_prompt = READING_PROMPT_FULL.format(
             question=context.user_data.get("question", "未指定問題"),
@@ -446,30 +489,10 @@ async def _handle_mode_copy(query, context: ContextTypes.DEFAULT_TYPE) -> None:
             cards="\n".join(context.user_data.get("card_results", [])),
         )
 
-        # <pre> 內容須做 HTML escape，避免特殊字元被 Telegram 誤判為 tag
-        escaped = html.escape(full_prompt)
-        pre_message = f"<pre>{escaped}</pre>"
+        await query.message.reply_text("📋 完整 Prompt 如下；若分成多則訊息，請依序複製到自己的 LLM：")
+        await safe_reply_with_html(query.message, f"<pre>{html.escape(full_prompt)}</pre>")
 
-        # Telegram 單則訊息上限 4096 字元，留一點 buffer
-        if len(pre_message) > 4000:
-            await query.message.reply_text(
-                "📋 <b>完整 Prompt（內容較長，分段呈現，請依序複製貼上）：</b>",
-                parse_mode="HTML",
-            )
-            chunk_size = 3500
-            for i in range(0, len(full_prompt), chunk_size):
-                chunk = full_prompt[i:i + chunk_size]
-                await query.message.reply_text(
-                    f"<pre>{html.escape(chunk)}</pre>",
-                    parse_mode="HTML",
-                )
-        else:
-            await query.message.reply_text(
-                f"📋 <b>請長按下方文字框複製，貼到你的 LLM：</b>\n\n{pre_message}",
-                parse_mode="HTML",
-            )
-
-        reset_kb = [[InlineKeyboardButton("🔄 結束，開啟新占卜", callback_data="new_reading")]]
+        reset_kb = [[InlineKeyboardButton("🔄 結束，開啟新占卜", callback_data=_reading_callback(context, "new_reading"))]]
         await query.message.reply_text(
             "✅ Prompt 已生成。\n\n"
             "💡 將上方內容貼到 ChatGPT、Claude 或 Gemini 等任何 LLM，即可獲得完整解讀。\n"
@@ -483,9 +506,10 @@ async def _handle_mode_copy(query, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     except Exception as e:
         await query.message.reply_text(f"❌ 產生 Prompt 時發生錯誤：{e}")
+        await _present_mode_selection(query.message, context)
 
 async def _handle_mode_builtin(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """用內建 Gemini Flash Lite 跑 LITE 版 prompt。"""
+    """Run the LITE prompt with the built-in Gemini Flash Lite model."""
     await query.message.reply_text("✨ 大師正在感應牌面連結，深度解析中...")
 
     prompt = READING_PROMPT_LITE.format(
@@ -502,7 +526,7 @@ async def _handle_mode_builtin(query, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         await safe_reply_with_html(query.message, response_text)
 
-        reset_kb = [[InlineKeyboardButton("🔄 結束追問，開啟新占卜", callback_data="new_reading")]]
+        reset_kb = [[InlineKeyboardButton("🔄 結束追問，開啟新占卜", callback_data=_reading_callback(context, "new_reading"))]]
         await safe_reply_with_html(
             query.message,
             "💡 <b>占卜完成。</b>\n如果你對某張牌有疑問，或想更深入了解，"
@@ -510,14 +534,16 @@ async def _handle_mode_builtin(query, context: ContextTypes.DEFAULT_TYPE) -> Non
             InlineKeyboardMarkup(reset_kb),
         )
     except Exception as e:
-        await query.message.reply_text(f"❌ 靈力中斷：{e}")
+        print(f"Built-in reading failed: {e}")
+        await query.message.reply_text("❌ 內建解析暫時無法使用，可複製 Prompt 到自己的 LLM 自行解析。")
+        await _present_mode_selection(query.message, context)
 
 
 # ── Layout selection (cards drawing) ─────────────────────────────────────────
 
-async def _handle_layout_selection(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """抽牌、發送牌面圖、然後請使用者選擇解讀模式。"""
-    count, layout_name, positions = LAYOUTS[query.data]
+async def _handle_layout_selection(query, context: ContextTypes.DEFAULT_TYPE, layout_key: str) -> None:
+    """Draw cards, send their images, and ask the user to choose a reading mode."""
+    count, layout_name, positions = LAYOUTS[layout_key]
 
     if not consume_usage(context.user_data):
         await query.edit_message_text("⏳ 大師今天的靈力已經耗盡囉！請輸入「/pwd 你的密碼」解鎖。")
@@ -534,18 +560,21 @@ async def _handle_layout_selection(query, context: ContextTypes.DEFAULT_TYPE) ->
             state = "逆位" if is_reversed else "正位"
 
             card_results.append(f"📍 {pos_label}: {card_name} ({state})")
-            photo = get_card_image(TAROT_DATA[card_name], is_reversed)
-            await query.message.reply_photo(
-                photo=photo, caption=f"📍 【{pos_label}】: {card_name} ({state})"
-            )
+            photo = await asyncio.to_thread(get_card_image, TAROT_DATA[card_name], is_reversed)
+            try:
+                await query.message.reply_photo(
+                    photo=photo, caption=f"📍 【{pos_label}】: {card_name} ({state})"
+                )
+            finally:
+                photo.close()
             await asyncio.sleep(1.5)
 
-        # 儲存抽牌結果，供後續模式選擇使用
+        # Store the drawn cards for the selected reading mode.
         context.user_data["layout_name"]  = layout_name
         context.user_data["card_results"] = card_results
 
-        # 顯示解讀模式按鈕
-        await _present_mode_selection(query)
+        # Show the reading mode buttons.
+        await _present_mode_selection(query.message, context)
 
     except Exception as e:
         await query.message.reply_text(f"❌ 靈力中斷：{e}")
@@ -555,26 +584,41 @@ async def _handle_layout_selection(query, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    action, _, reading_id = (query.data or "").partition(":")
+    if not reading_id or reading_id != context.user_data.get("reading_id"):
+        await query.answer("這個按鈕已失效，請使用目前的占卜按鈕。", show_alert=True)
+        return
+    if action in LAYOUTS:
+        if not context.user_data.pop("selection_pending", False):
+            await query.answer("這次占卜已經抽過牌了。", show_alert=True)
+            return
+    elif action in ("mode_copy", "mode_builtin"):
+        if context.user_data.get("mode_pending") != (query.message.chat_id, query.message.message_id):
+            await query.answer("這個選項已處理，請使用最新的按鈕。", show_alert=True)
+            return
+        context.user_data["mode_pending"] = None
+    elif action != "new_reading":
+        await query.answer("不支援的選項。", show_alert=True)
+        return
     await query.answer()
 
-    if query.data == "new_reading":
-        context.user_data["is_follow_up_mode"] = False
-        context.user_data["reading_context"] = ""
+    if action == "new_reading":
+        _reset_reading(context.user_data)
         await query.message.reply_text(
             "🌙 記憶已重置。\n請直接輸入你【新的問題】，我將為你開啟全新的占卜。"
         )
         return
 
-    if query.data == "mode_copy":
+    if action == "mode_copy":
         await _handle_mode_copy(query, context)
         return
 
-    if query.data == "mode_builtin":
+    if action == "mode_builtin":
         await _handle_mode_builtin(query, context)
         return
 
-    if query.data in LAYOUTS:
-        await _handle_layout_selection(query, context)
+    if action in LAYOUTS:
+        await _handle_layout_selection(query, context, action)
         return
 
 # ── Server & Entry ────────────────────────────────────────────────────────────
@@ -590,7 +634,25 @@ class PingHandler(BaseHTTPRequestHandler):
         pass
 
 
+def validate_config() -> None:
+    missing = [
+        name for name, value in (("TELEGRAM_TOKEN", TELEGRAM_TOKEN), ("GEMINI_API_KEY", GEMINI_API_KEY))
+        if not value or not value.strip() or value.startswith("replace-with-")
+    ]
+    if missing:
+        raise RuntimeError(f"請設定有效的 {', '.join(missing)}，再執行 uv run --env-file .env python app.py")
+    try:
+        port = int(os.environ.get("PORT", 10000))
+    except ValueError:
+        raise RuntimeError("PORT 必須是 1 到 65535 的整數。") from None
+    if not 1 <= port <= 65535:
+        raise RuntimeError("PORT 必須是 1 到 65535 的整數。")
+
+
 def run_bot() -> None:
+    global client
+    validate_config()
+    client = genai.Client(api_key=GEMINI_API_KEY)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -606,11 +668,13 @@ def run_bot() -> None:
     )
     app.add_handler(CommandHandler("start",  send_welcome))
     app.add_handler(CommandHandler("manual", handle_manual))
+    app.add_handler(CommandHandler("status", handle_status))
     app.add_handler(CommandHandler("pwd",    handle_pwd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("--- 機器人已在背景啟動 ---")
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+    print("--- 機器人啟動中 ---")
     app.run_polling(stop_signals=None, drop_pending_updates=True)
 
 
@@ -622,5 +686,4 @@ def run_dummy_server() -> None:
 
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    run_dummy_server()
+    run_bot()
