@@ -7,8 +7,8 @@ from google import genai
 from telegram import BotCommand
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
-import tarot
-from handlers import button_handler, handle_manual, handle_pwd, handle_status, handle_text_input, send_welcome
+from bot import tarot
+from bot.handlers import button_handler, handle_manual, handle_pwd, handle_status, handle_text_input, send_welcome
 
 async def post_init(application: Application) -> None:
     await application.bot.set_my_commands([

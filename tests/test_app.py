@@ -1,4 +1,4 @@
-"""Run offline regression checks with: uv run python test_app.py."""
+"""Run offline regression checks with: uv run python -m tests.test_app."""
 
 import asyncio
 import contextlib
@@ -11,8 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import app
-import handlers
-import tarot
+from bot import handlers, tarot
 import html
 from telegram.error import BadRequest, NetworkError
 
@@ -158,7 +157,7 @@ async def main():
                 assert image.format == "JPEG"
             photo.close()
             with patch("requests.get") as download:
-                runpy.run_path(str(tarot.BASE_DIR / "download_cards.py"))
+                runpy.run_path(str(tarot.BASE_DIR / "scripts" / "download_cards.py"))
                 download.assert_not_called()
         finally:
             os.chdir(original_cwd)

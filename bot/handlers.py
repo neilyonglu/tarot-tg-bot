@@ -8,8 +8,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-import tarot
-from prompts import FOLLOW_UP_PROMPT, MANUAL_TEXT, READING_PROMPT_FULL, READING_PROMPT_LITE
+from bot import tarot
+from bot.prompts import FOLLOW_UP_PROMPT, MANUAL_TEXT, READING_PROMPT_FULL, READING_PROMPT_LITE
 
 async def safe_reply_with_html(message_obj, text: str, reply_markup=None) -> None:
     if len(text.encode("utf-16-le")) <= 8000:

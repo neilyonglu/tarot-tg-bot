@@ -10,10 +10,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: tarot-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -25,11 +21,14 @@ jobs:
       - name: Build and test the Linux image
         run: |
           docker build --tag tarot-ci .
-          docker run --rm --network none tarot-ci python test_app.py
+          docker run --rm --network none tarot-ci python -m tests.test_app
 
   deploy:
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    concurrency:
+      group: tarot-production
+      cancel-in-progress: false
     runs-on: [self-hosted, Linux, X64, tarot]
     timeout-minutes: 15
     env:

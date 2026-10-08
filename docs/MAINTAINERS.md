@@ -4,19 +4,23 @@
 
 ```
 tarot-tg-bot/
-├── cards/               # 78 public-domain card images
-├── app.py               # Bot entry point
-├── tarot.py             # Card data, quotas, images, Gemini, and configuration
-├── handlers.py          # Telegram messages and reading interactions
-├── prompts.py           # Reading prompts and in-bot manual
-├── download_cards.py    # Download missing images from Wikimedia
-├── test_app.py          # Offline regression checks
-├── tarot_data.json      # Card names and image URLs
-├── pyproject.toml       # Project metadata and dependencies
-├── uv.lock              # Locked dependency versions
-├── .python-version      # Python version for uv
-├── .env.example         # Environment configuration template
-└── requirements.txt     # Generated dependencies for pip-based deployments
+├── app.py                  # Bot entry point
+├── bot/                    # Telegram handlers, tarot logic, and prompts
+├── assets/
+│   ├── cards/              # 78 public-domain card images
+│   └── tarot_data.json     # Card names and image URLs
+├── tests/test_app.py       # Offline regression checks
+├── scripts/download_cards.py
+├── docs/MAINTAINERS.md     # Development and server deployment
+├── .github/workflows/deploy.yaml
+├── Dockerfile
+├── compose.yaml
+├── pyproject.toml          # Project metadata and dependencies
+├── uv.lock                 # Locked dependency versions
+├── .python-version
+├── .env.example
+├── README.md               # Telegram user instructions
+└── requirements.txt        # Generated dependencies for pip deployments
 ```
 
 ## 環境變數
@@ -46,7 +50,7 @@ uv run --env-file .env python app.py
 卡牌圖片已包含在專案內；需要補下載時執行：
 
 ```powershell
-uv run python download_cards.py
+uv run python scripts/download_cards.py
 ```
 
 `uv run` 會自動使用專案的 `.venv`，不需要手動啟用虛擬環境。請勿提交 `.env`。
@@ -56,7 +60,7 @@ uv run python download_cards.py
 離線檢查（不呼叫 Telegram 或 Gemini API）：
 
 ```powershell
-uv run python test_app.py
+uv run python -m tests.test_app
 ```
 
 新增或更新依賴時，以 `pyproject.toml` 與 `uv.lock` 為準；仍使用 pip 的部署環境可安裝 `requirements.txt`。修改依賴後重新匯出：

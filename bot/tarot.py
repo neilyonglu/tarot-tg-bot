@@ -19,12 +19,12 @@ GEMINI_MODEL_PRIMARY  = "gemini-3.1-flash-lite"
 GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"
 DAILY_LIMIT     = 7
 CONTEXT_MAX_CHARS = 2000  # Follow-up context limit; discard the oldest text when exceeded.
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 TAIWAN_TIME = timezone(timedelta(hours=8))
 
 client = None
 
-with (BASE_DIR / "tarot_data.json").open(encoding="utf-8") as f:
+with (BASE_DIR / "assets" / "tarot_data.json").open(encoding="utf-8") as f:
     TAROT_DATA = json.load(f)
 
 LAYOUTS = {
@@ -62,7 +62,7 @@ def consume_usage(user_data: dict) -> bool:
 
 def get_card_image(url: str, is_reversed: bool) -> BytesIO:
     filename = os.path.basename(urlparse(url).path)
-    local_path = BASE_DIR / "cards" / filename
+    local_path = BASE_DIR / "assets" / "cards" / filename
 
     if os.path.exists(local_path):
         img = Image.open(local_path)

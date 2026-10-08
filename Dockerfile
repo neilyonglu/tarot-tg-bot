@@ -9,9 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --locked --no-dev --no-install-project
 
-COPY app.py tarot.py handlers.py prompts.py download_cards.py test_app.py tarot_data.json ./
-COPY cards/ ./cards/
-RUN python test_app.py
+COPY app.py ./
+COPY bot/ ./bot/
+COPY assets/ ./assets/
+COPY scripts/ ./scripts/
+COPY tests/ ./tests/
+RUN python -m tests.test_app
 
 USER 10001:10001
 CMD ["python", "app.py"]
