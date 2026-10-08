@@ -63,7 +63,7 @@ jobs:
                   f'https://api.telegram.org/bot{token}/sendMessage',
                   json={
                       'chat_id': 6501701404,
-                      'text': '✅ Server 已更新 main，Docker 建置測試與容器健康檢查通過。',
+                      'text': 'active sucess',
                   },
                   timeout=30,
               )
