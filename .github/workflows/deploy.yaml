@@ -48,7 +48,7 @@ jobs:
           git merge --ff-only "$DEPLOY_SHA"
           test "$(git rev-parse HEAD)" = "$DEPLOY_SHA"
           docker compose build bot
-          docker compose up --detach --wait --wait-timeout 90 bot
+          docker compose up --detach --remove-orphans --wait --wait-timeout 90 bot
           docker compose ps
 
       - name: Notify Telegram

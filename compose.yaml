@@ -2,6 +2,7 @@ name: tarot-tg-bot
 
 services:
   bot:
+    container_name: tarot-bot
     build: .
     init: true
     restart: unless-stopped
