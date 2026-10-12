@@ -2,7 +2,7 @@ name: tarot-tg-bot
 
 services:
   bot:
-    image: tarot-tg-bot:latest
+    image: tarot-bot
     container_name: tarot-bot
     build: .
     init: true
